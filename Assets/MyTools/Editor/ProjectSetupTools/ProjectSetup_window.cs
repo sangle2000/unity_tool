@@ -13,6 +13,10 @@ using UnityEngine.UI;
 using System.Drawing.Printing;
 using static Codice.CM.WorkspaceServer.WorkspaceTreeDataStore;
 using static System.Net.Mime.MediaTypeNames;
+using System.Collections.Specialized;
+using Unity.VisualScripting.YamlDotNet.Core.Tokens;
+using PlasticPipe.PlasticProtocol.Messages;
+using System.Linq;
 
 namespace MyTools
 {
@@ -29,17 +33,14 @@ namespace MyTools
         string nameAttrib = "";
 
         bool showAttribArr = true;
-        bool showAttribObj = true;
         bool writeData = false;
-        private string Dir
-        {
-            get => dir;
-            set
-            {
-                dir = value;
-                Debug.Log("Do something");
-            }
-        }
+        bool reloadData = false;
+
+        Vector2 paletteScrollPos = new Vector2(0, 0);
+
+        //IDictionary<string, bool> showAttribObj = new Dictionary<string, bool>();
+
+        Dictionary<string, bool> showAttribObj = new Dictionary<string, bool>();
 
         private bool checkBtn = false;
         JObject data = null;
@@ -75,17 +76,41 @@ namespace MyTools
                     }
                 }
             }
+            paletteScrollPos = EditorGUILayout.BeginScrollView(paletteScrollPos, GUILayout.ExpandWidth(true));
 
             if (checkBtn && data != null)
             {
                 foreach (JProperty property in curData.Properties())
                 {
-                    if (property.Value.ToString().StartsWith("{") && property.Value.ToString().EndsWith("}") && property.Value.ToString().Contains(":"))
+                    if (property.Value.Type.ToString() == "Object")
                     {
-                        JObject dataTrans = (JObject) property.Value;
-                        ExportDeepDict(curData, property.Name, dataTrans);
+                        if (!showAttribObj.ContainsKey(property.Name))
+                        {
+                            showAttribObj.Add(property.Name, true);
+                        }
 
-                    } else if(property.Value.ToString().StartsWith("[") && property.Value.ToString().EndsWith("]"))
+                        nameAttribObj = property.Name;
+                        showAttribObj[property.Name] = EditorGUILayout.Foldout(showAttribObj[property.Name], nameAttribObj);
+                        if (showAttribObj[property.Name])
+                        {
+                            if (!Selection.activeTransform)
+                            {
+                                JObject newProperty = (JObject)property.Value;
+                                foreach (JProperty child in newProperty.Properties())
+                                {
+                                    EditorGUI.indentLevel++;
+                                    ExportDeepDict(child.Name, child.Value, newProperty);
+                                    EditorGUI.indentLevel--;
+                                }
+                            }
+                            else if (Selection.activeTransform)
+                            {
+                                nameAttribObj = property.Name;
+                                showAttribObj[property.Name] = false;
+                            }
+                        }
+                    }
+                    else if (property.Value.Type.ToString() == "Array")
                     {
                         JArray childData = (JArray)property.Value;
                         nameAttribArr = property.Name;
@@ -94,17 +119,9 @@ namespace MyTools
                         {
                             if (!Selection.activeTransform)
                             {
-                                EditorGUI.BeginChangeCheck();
-
                                 for (int i = 0; i < childData.Count; i++)
                                 {
-                                    EditorGUI.indentLevel++;
-                                    nameAttribArr = EditorGUILayout.TextField(childData[i].ToString());
-                                    if (EditorGUI.EndChangeCheck())
-                                    {
-                                        curData[property.Name][i] = nameAttribArr;
-                                    }
-                                    EditorGUI.indentLevel--;
+                                    ExportDeepList(childData[i], childData, i);
                                 }
                             }
 
@@ -120,33 +137,70 @@ namespace MyTools
                         EditorGUI.BeginChangeCheck();
                         GUILayout.BeginHorizontal();
                         nameAttrib = property.Name;
-                        nameAttrib = EditorGUILayout.TextField(nameAttrib, property.Value.ToString());
+                        nameAttrib = EditorGUILayout.TextField(nameAttrib, property.Value.ToString(), GUILayout.Width(200));
+
                         GUILayout.EndHorizontal();
 
                         if (EditorGUI.EndChangeCheck())
                         {
-                            curData[property.Name] = nameAttrib;
+                            if (curData[property.Name].Type.ToString() == "Integer")
+                            {
+                                try
+                                {
+                                    curData[property.Name] = Int32.Parse(nameAttrib);
+                                }
+                                catch (FormatException)
+                                {
+                                    Debug.Log("Error");
+                                }
+                            }
+                            else
+                            {
+                                curData[property.Name] = nameAttrib;
+                            }
                         }
                     }
                 }
             }
+
             if (checkBtn && data != null)
             {
-                if (GUILayout.Button("Save Data", GUILayout.Height(20), GUILayout.Width(100)))
+                EditorGUILayout.BeginHorizontal();
+                if (GUILayout.Button("Save Data", GUILayout.Height(30), GUILayout.Width(200)))
                 {
                     writeData = true;
                 }
+
+                if (GUILayout.Button("Reload Data", GUILayout.Height(30), GUILayout.Width(200)))
+                {
+                    reloadData = true;
+                }
+                EditorGUILayout.EndHorizontal();
             }
             if (writeData)
             {
                 WriteToJson(curData, dir);
+                data = LoadJson(dir);
                 writeData = false;
             }
+            if (reloadData)
+            {
+                data = LoadJson(dir);
+                curData = new();
+                foreach (JProperty property in data.Properties())
+                {
+                    curData.Add(property.Name, property.Value);
+                }
+                reloadData = false;
+            }
+
+            EditorGUILayout.EndScrollView();
         }
         #endregion
 
         public JObject LoadJson(string filePath)
         {
+            //JsonDictionaryAttribute jsonDictionaryAttribute = new JsonDictionaryAttribute();
             JObject data = JObject.Parse(File.ReadAllText(filePath));
             return data;
         }
@@ -160,48 +214,134 @@ namespace MyTools
             }
         }
 
-        public void ExportDeepDict(JObject curData, string dataName, JObject data)
+        public void ExportDeepDict(string dataName, JToken dataObject, JObject parentDict)
         {
-            foreach(JProperty property in data.Properties())
+            if (dataObject.Type.ToString() == "Object")
             {
-                string dataValue = property.Value.ToString();
-                if (dataValue.StartsWith("{") && dataValue.EndsWith("}") && dataValue.Contains(":"))
+                if (!showAttribObj.ContainsKey(dataName))
                 {
-                    JObject dataCallBack = (JObject)property.Value;
-                    ExportDeepDict(curData, dataName, dataCallBack);
+                    showAttribObj.Add(dataName, true);
                 }
-                else
+                JObject dataCallBack = (JObject)dataObject;
+                nameAttribObj = dataName;
+                showAttribObj[dataName] = EditorGUILayout.Foldout(showAttribObj[dataName], nameAttribObj);
+                if (showAttribObj[dataName])
                 {
-                    nameAttribObj = dataName;
-                    showAttribObj = EditorGUILayout.Foldout(showAttribObj, nameAttribObj);
-                    if (showAttribObj)
+                    if (!Selection.activeTransform)
                     {
-                        if (!Selection.activeTransform)
+                        foreach (JProperty child in dataCallBack.Properties())
                         {
-                            //EditorGUI.BeginChangeCheck();
-                            foreach (JProperty child in data.Properties())
-                            {
-                                EditorGUI.indentLevel++;
-                                nameAttribObj = EditorGUILayout.TextField($"{child.Name}: ", dataValue);
-
-                                /*if (EditorGUI.EndChangeCheck())
-                                {
-                                    curData[dataName][child.Name] = nameAttribObj;
-                                }*/
-                                EditorGUI.indentLevel--;
-
-                            }
+                            EditorGUI.indentLevel++;
+                            ExportDeepDict(child.Name, child.Value, dataCallBack);
+                            EditorGUI.indentLevel--;
                         }
-                        if (Selection.activeTransform)
-                        {
-                            nameAttribObj = dataName;
-                            showAttribObj = false;
-                        }
+                    }
+                    else if (Selection.activeTransform)
+                    {
+                        nameAttribObj = dataName;
+                        showAttribObj[dataName] = false;
                     }
                 }
             }
-            
+            else if (dataObject.Type.ToString() == "Array")
+            {
+                if (!showAttribObj.ContainsKey(dataName))
+                {
+                    showAttribObj.Add(dataName, true);
+                }
+
+                JArray childData = (JArray)dataObject;
+
+                nameAttribObj = dataName;
+                showAttribObj[dataName] = EditorGUILayout.Foldout(showAttribObj[dataName], nameAttribObj);
+                if (showAttribObj[dataName])
+                {
+                    if (!Selection.activeTransform)
+                    {
+                        EditorGUILayout.BeginVertical("box");
+                        for (int i = 0; i < childData.Count; i++)
+                        {
+                            EditorGUI.indentLevel++;
+                            ExportDeepList(childData[i], childData, i);
+                            EditorGUI.indentLevel--;
+                        }
+                        EditorGUILayout.EndVertical();
+                    }
+                    else if (Selection.activeTransform)
+                    {
+                        nameAttribObj = dataName;
+                        showAttribObj[dataName] = false;
+                    }
+                }
+            }
+            else
+            {
+                EditorGUI.BeginChangeCheck();
+                EditorGUI.indentLevel++;
+                nameAttribObj = EditorGUILayout.TextField($"{dataName}: ", dataObject.ToString());
+                if (EditorGUI.EndChangeCheck())
+                {
+                    if (parentDict[dataName].Type.ToString() == "Integer")
+                    {
+                        try
+                        {
+                            parentDict[dataName] = Int32.Parse(nameAttribObj);
+                            Debug.Log(dataName);
+                            Debug.Log(data.Property(dataName));
+                        }
+                        catch (FormatException e)
+                        {
+                            Debug.Log(e);
+                        }
+                    }
+                    else
+                    {
+                        parentDict[dataName] = nameAttribObj;
+                    }
+                }
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        public void ExportDeepList(JToken data, JArray parentData, int index)
+        {
+            if (data.Type.ToString() == "Object")
+            {
+                JObject dataCallBack = (JObject)data;
+                EditorGUILayout.BeginVertical("box");
+                foreach (JProperty child in dataCallBack.Properties())
+                {
+                    EditorGUI.indentLevel++;
+                    ExportDeepDict(child.Name, child.Value, dataCallBack);
+                    EditorGUI.indentLevel--;
+                }
+                EditorGUILayout.EndVertical();
+            }
+            else
+            {
+                EditorGUI.BeginChangeCheck();
+                EditorGUI.indentLevel++;
+                nameAttribArr = EditorGUILayout.TextField(data.ToString());
+                if (EditorGUI.EndChangeCheck())
+                {
+                    if (parentData[index].Type.ToString() == "Integer")
+                    {
+                        try
+                        {
+                            parentData[index] = Int32.Parse(nameAttribArr);
+                        }
+                        catch (FormatException)
+                        {
+                            Debug.Log("Error");
+                        }
+                    }
+                    else
+                    {
+                        parentData[index] = nameAttribArr;
+                    }
+                }
+                EditorGUI.indentLevel--;
+            }
         }
     }
 }
-
